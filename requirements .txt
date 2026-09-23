@@ -1,5 +1,5 @@
-streamlit>=1.50
-pandas
-plotly
-openpyxl
-fpdf2
+   streamlit>=1.50
+   pandas
+   plotly
+   openpyxl
+   fpdf2
