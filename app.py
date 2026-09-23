@@ -1,8 +1,10 @@
+import io
 import re
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from fpdf import FPDF
 
 # ------------------------------------------------------------------ config
 SHEET_ID = "1sE0isqBf2Qisb_HJKaI-mKXYKpeXiWfctBOzEHG6Drg"
@@ -46,6 +48,41 @@ def to_date(s: pd.Series) -> pd.Series:
     d = pd.to_datetime(s, format="%d/%b/%y", errors="coerce")
     rest = pd.to_datetime(s[d.isna()], dayfirst=True, errors="coerce")
     return d.fillna(rest)
+
+
+@st.cache_data(show_spinner=False)
+def to_excel(d: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        d.to_excel(w, index=False, sheet_name="Data")
+    return buf.getvalue()
+
+
+def _fmt(v) -> str:
+    if pd.isna(v):
+        return ""
+    if isinstance(v, pd.Timestamp):
+        return v.strftime("%d-%b-%y")
+    if isinstance(v, float):
+        return f"{v:,.0f}" if v == int(v) else f"{v:,.2f}"
+    return str(v).encode("latin-1", "replace").decode("latin-1")
+
+
+def to_pdf(d: pd.DataFrame, max_rows: int = 300) -> bytes:
+    pdf = FPDF(orientation="L", format="A4")
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "Production report", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", size=7)
+    with pdf.table() as t:
+        h = t.row()
+        for c in d.columns:
+            h.cell(_fmt(c))
+        for _, r in d.head(max_rows).iterrows():
+            row = t.row()
+            for v in r:
+                row.cell(_fmt(v))
+    return bytes(pdf.output())
 
 
 @st.cache_data(ttl=300, show_spinner="Loading data from Google Sheet…")
@@ -181,4 +218,20 @@ with tab3:
     show_all = st.toggle("Show all columns", value=False)
     view = f if show_all else f[key]
     st.dataframe(view, height=520)
-    st.download_button("⬇️ Download filtered data (CSV)", view.to_csv(index=False).encode(), "filtered_data.csv", "text/csv")
+
+    PDF_COLS = {BUYER: "Buyer", STYLE: "Style", COLOR: "Colour", ORDER_DATE: "Order date", ORD: "Order",
+                CUT: "Cut", STITCH: "Stitch", PACK: "Pack", DISP: "Dispatch", REJ: "Rej.", SHORT: "Short",
+                STATUS_COLS["Dispatch"]: "Dispatch status"}
+    pdfdf = f[[c for c in PDF_COLS if c in f]].rename(columns=PDF_COLS)
+    sig = int(pd.util.hash_pandas_object(pdfdf, index=False).sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("⬇️ Excel (.xlsx)", to_excel(view), "production_data.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    c2.download_button("⬇️ CSV", view.to_csv(index=False).encode(), "production_data.csv", "text/csv")
+    if c3.button("📄 Create PDF"):
+        st.session_state["pdf"] = (sig, to_pdf(pdfdf))
+    if st.session_state.get("pdf", (None, None))[0] == sig:
+        c3.download_button("⬇️ Download PDF", st.session_state["pdf"][1], "production_report.pdf", "application/pdf")
+    st.caption("PDF = key columns, first 300 rows. Google Sheets: download the Excel file, then in Google Drive "
+               "choose New → File upload → open it with Google Sheets.")
